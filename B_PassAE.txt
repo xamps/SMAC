@@ -1,0 +1,289 @@
+/******************************************************************/
+/*                 Copyright (c) 2003 by Citibank N.A.            */
+/*                                                                */
+/*  All rights reserved.  These  materials are confidential and   */
+/*  proprietary to Citibank N.A. and no part of these materials   */
+/*  should be reproduced,  published in any form  by any means,   */
+/*  electronic  or  mechanical,   including  photocopy  or  any   */
+/*  information  storage  or  retrieval  system  nor should the   */
+/*  materials be disclosed to third parties without the express   */
+/*  written authorization of Citibank N.A.                        */
+/*                                                                */
+/******************************************************************/
+ 
+#include "billing.h"
+#include "CM_Routines.h"
+
+EXEC SQL INCLUDE SQLCA.H;
+
+/*** This is the driver function for Common Accounting Entries Passing Prgm **/
+/**  This is a batch program **/
+
+
+main (int argc,char **argv)
+{
+	/**DECLARATIONS **/
+
+	struct					sqlca sqlca;
+
+	ERROR_STRUCT			*ptr_error_list 				= NULL;
+	ERROR_STRUCT			**p_error_list					= NULL;
+	SYS_ENVIRON_STRUCT	*p_environ_struct 			= (SYS_ENVIRON_STRUCT *) NULL;
+	int 						retval							= 0;
+	int 						i									= 0;
+	FILE   					*fl_Techlog 					= (FILE *) NULL;
+	FILE						*fl_Userlog 					= (FILE *) NULL;
+	FILE						*finifile 						= (FILE *) NULL;
+	char						inifile[PATH_LENGTH]	 		= SYS_NULL_STRING;
+	char						l_sys_date[SYS_DATE_LEN]	= SYS_NULL_STRING;
+	char						l_Techlog[PATH_LENGTH]		= SYS_NULL_STRING;
+	char						l_Userlog[PATH_LENGTH]	   = SYS_NULL_STRING;
+	char  					logfile[PATH_LENGTH]			= SYS_NULL_STRING;
+	char						citiId[SYS_USERID_LEN]		= SYS_NULL_STRING;
+	char						uname[SYS_USERID_LEN];
+	char						passwd[SYS_PASSWD_LEN];
+	char						rep_st[3]						= SYS_NULL_STRING;
+	char						rep_st1[3]						= SYS_NULL_STRING;
+	char						comstr[50]						= SYS_NULL_STRING;
+	int						num								= 0;
+	char						**temp;
+
+	char     				h_batch_date[SYS_DATE_LEN] = SYS_NULL_STRING;
+   char     				h_passflg[2]               = SYS_NULL_STRING;
+   char     				h_modident[2]              = SYS_NULL_STRING;
+   char    					h_batch_no[6]              = SYS_NULL_STRING;
+	short						l_row_count						= 0; /* VT40361216 fix 27-Nov-2012 */
+	char 						l_today[SYS_DATE_LEN]     	= SYS_NULL_STRING;/* VT40361216 fix 27-Nov-2012 */
+	EXEC SQL BEGIN DECLARE SECTION;
+
+	EXEC SQL VAR uname IS STRING;
+	EXEC SQL VAR passwd IS STRING;
+   EXEC SQL VAR l_today IS STRING; /* VT40361216 fix 27-Nov-2012 */
+  	
+	EXEC SQL END DECLARE SECTION;
+   
+
+	/****** ALLOCATION OF MEMORY ********/
+
+	p_environ_struct   =  (SYS_ENVIRON_STRUCT*)calloc(1,sizeof(SYS_ENVIRON_STRUCT));
+   SYS_MEM_ALLOC_FAIL(p_environ_struct);
+
+	p_error_list	= &ptr_error_list; 
+
+	/**GETTING CONNECTIVITY**/
+
+	strcpy(inifile,getenv("SESAM_INI_DIR"));
+	strcat(inifile,"/Sesam.ini");
+
+	if ( (finifile = fopen(inifile,"r") ) == NULL )
+		exit(-1);
+
+	SYS_GET_ORA_ID_PASSWD(finifile, citiId, uname, passwd , SYS_TRACE_FILE , p_error_list)
+	EXEC SQL CONNECT :uname IDENTIFIED BY :passwd;
+	SYS_CHECK_SQL_ERROR	
+
+	/** DEPENDING ON THE MODULE IDENTIFIER , OPEN THE LOG FILES 
+		 PATCH UP DONE BECAUSE OF LOG FILE CHANGES **/
+	
+	strcpy(comstr, argv[9]);
+	
+	if (SYS_FAILURE == CBStrSplitFn( comstr, 
+                                    ',',
+                                    &num,
+                                    &temp) )
+   {
+      exit(-1);
+   }
+
+   if (num ==0 )
+   {
+      SYS_RETURN_FAILURE
+   }
+
+   strcpy(h_passflg,temp[0]);
+   strcpy(h_modident,temp[1]);
+   strcpy(h_batch_no,temp[2]);
+   strcpy(h_batch_date,temp[3]);
+
+
+	if (!strcmp(h_modident, "P") )
+	{
+		strcpy(rep_st,"1G" );
+	}
+	if (!strcmp(h_modident, "B") )
+	{
+		strcpy(rep_st,"1H");
+	}
+	if (!strcmp(h_modident, "C") )
+	{
+		strcpy(rep_st,"3A");
+	}
+	if (!strcmp(h_modident, "T") )
+	{
+		strcpy(rep_st,"3d");
+	}
+	if (!strcmp(h_modident, "A") )
+	{
+		strcpy(rep_st, "2A");
+	}	
+
+
+	if (!strcmp(h_modident, "P") )
+	{
+		strcpy(rep_st1,"1g" );
+	}
+	if (!strcmp(h_modident, "B") )
+	{
+		strcpy(rep_st1,"1h");
+	}
+	if (!strcmp(h_modident, "C") )
+	{
+		strcpy(rep_st1,"3a");
+	}
+	if (!strcmp(h_modident, "T") )
+	{
+		strcpy(rep_st1,"3e");
+	}
+	if (!strcmp(h_modident, "A") )
+	{
+		strcpy(rep_st1, "2a");
+	}	
+
+
+	if (SYS_FAILURE == GDBGenRepFileFn( rep_st,
+                                       SYS_LOGFILE_DESC,
+                                       100,
+                                       argv[5], 
+                                       argv,
+                                       &fl_Userlog,
+                                       p_error_list) )
+   {
+     exit(-1); 
+   }
+
+   if (SYS_FAILURE == GDBGenRepFileFn( rep_st1,
+                                       SYS_LOGFILE_DESC,
+                                       100,
+                                      	argv[5], 
+                                       argv,
+                                       &fl_Techlog,
+                                       p_error_list) )
+   {
+     exit(-1); 
+   }
+   EXEC SQL COMMIT ;
+   SYS_CHECK_SQL_ERROR	
+
+
+	/*** POPULATE THE ENVIRON STRUCTURE ***/
+
+	strcpy(p_environ_struct->userid, argv[3]);
+	strcpy(p_environ_struct->mode,	argv[4]); 	
+
+	/*** GET  SYSTEM PARAMETERS ****/
+	if (SYS_FAILURE == CM_GetSystemParams(p_error_list))
+	{
+		fprintf(fl_Userlog,"Failed To Get System Parameters\n");
+		SYS_RETURN_FAILURE
+	}
+
+      if (SYS_FAILURE == CM_GetSystemDate(l_today,p_error_list))
+      {
+   		SYS_RETURN_FAILURE
+		}
+		/* Faizal VT40361216 fix 27-Nov-2012 - Begin */
+		if (!strcmp(h_modident, "C") )
+		{
+			EXEC SQL SELECT count(*) into :l_row_count
+				FROM BATCH_IN_PROC
+				WHERE PROGNAME    = 'Core_Accent'
+				AND STATUS        = 'started'
+				/* AND TO_CHAR(STARTDATE,'DD/MM/YYYY')	= TO_CHAR(TO_DATE(:l_today),'DD/MM/YYYY'); */ /*faizal*/
+				AND TO_CHAR(STARTDATE,'DD/MM/YYYY')  = :l_today ;
+		}
+		else if(!strcmp(h_modident, "P")) 
+		{
+			EXEC SQL SELECT count(*) into :l_row_count
+				FROM BATCH_IN_PROC
+				WHERE PROGNAME    = 'B_PAE'
+				AND STATUS        = 'started'
+				AND TO_CHAR(STARTDATE,'DD/MM/YYYY')  = :l_today ;
+
+		}
+		else if (!strcmp(h_modident, "B"))
+		{EXEC SQL SELECT count(*) into :l_row_count
+			FROM BATCH_IN_PROC
+				WHERE PROGNAME    = 'B_BACC'
+				AND STATUS        = 'started'
+				AND TO_CHAR(STARTDATE,'DD/MM/YYYY')  = :l_today ;
+		}
+		else if (!strcmp(h_modident, "A"))
+		{EXEC SQL SELECT count(*) into :l_row_count
+			FROM BATCH_IN_PROC
+				WHERE PROGNAME    = 'A_GenAcct'
+				AND STATUS        = 'started'
+				AND TO_CHAR(STARTDATE,'DD/MM/YYYY')  = :l_today ;
+		}
+		else 
+		{
+			EXEC SQL SELECT count(*) into :l_row_count
+				FROM BATCH_IN_PROC
+				WHERE PROGNAME    = 'Contingent_AccEnt'
+				AND STATUS        = 'started'
+				AND TO_CHAR(STARTDATE,'DD/MM/YYYY')  = :l_today ;
+		}	
+		printf("Testing VT40361216-l_row_count[%d], l_today [%s] for mode [%s]\n",l_row_count,l_today,h_modident);
+		if (l_row_count >0)
+		{
+         fprintf(fl_Userlog,"Accounting Entries generation is in progress. Quitting Accounting Entries Passing function\n");
+    		CM_WrLog(SYS_TRACE_FILE, "Accounting Entries can not be Passed as Accounting Entries generation is in progress. \n", (ERROR_STRUCT **)NULL, (SYS_ENVIRON_STRUCT *)NULL);
+			SYS_RETURN_FAILURE
+      }
+
+   
+   /* Faizal VT40361216 fix 27-Nov-2012 - End */
+	
+	fprintf(fl_Userlog,"Calling The Payment Passing Accounting Entries function\n");
+
+	if (	SYS_FAILURE == B_PayPassAccEntFn( argv,
+														fl_Techlog,
+														fl_Userlog,
+														p_environ_struct,
+														p_error_list)
+		)
+
+	{
+			fprintf(fl_Userlog,"The Payment Passing Accounting Entries returned  failure \n");
+			CM_WrLog(fl_Techlog,
+						"Errors In Passing Pymnt Acc Ent",
+						p_error_list,
+						p_environ_struct);
+			CM_FreeErrorList(p_error_list);
+			EXEC SQL ROLLBACK WORK RELEASE;
+			SYS_CHECK_SQL_ERROR
+			SYS_RETURN_FAILURE
+	}
+	else
+	{
+			EXEC SQL COMMIT WORK RELEASE;
+			SYS_CHECK_SQL_ERROR
+			fprintf(fl_Userlog,"The Payment Passing Accounting Entries returned success\n");
+			SYS_RETURN_SUCCESS
+	}
+			
+		
+	SYS_RETURN_SUCCESS
+
+	/**EXIT BLOCK **/
+
+	LBL_EXIT_SUCCESS:
+	GDBClosRepFlFn(fl_Techlog,p_error_list);
+   GDBClosRepFlFn(fl_Userlog,p_error_list);
+	exit(0); /* ST2-BE-004 */
+
+	LBL_EXIT_FAILURE:
+	GDBClosRepFlFn(fl_Techlog,p_error_list);
+   GDBClosRepFlFn(fl_Userlog,p_error_list);
+	exit(1); /* ST2-BE-004 */
+}
+
