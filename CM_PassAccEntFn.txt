@@ -1,0 +1,1572 @@
+
+/*
+******************************************************************************
+							Copyright(c) 1998 by CITIBANK N.A.
+
+        All rights reserved. These materials are confidential and proprietary
+to CITIBANK N.A. and no part of these materials should be reproduced, published
+in any form by any means, electronic or mechanical, including photocopy or any
+information storage or retrieval system nor should the materials be disclosed
+to third parties without the express written authorisation of CITIBANK N.A.
+********************************************************************************
+*/
+
+/**********************************************************************
+ *                                                                    *
+ * Project Name        : SESAMII                                      *
+ * Module Name         : Common Routines                              *
+ * File Name           : CM_PassAccEntFn.pc                           *
+ *                                                                    *
+ * Description         : This source file contains the functions      *
+ *                       for passing Accounting Entries               *
+ *                                                                    *
+ * Screens Used        : None                                         *
+ * Reports Used        : None                                         *
+ *                                                                    *
+ *           Copyright COSL (C) 1998                                  *
+ *                                                                    *
+ * Notes               :                                              *
+ *                                                                    *
+ *            Version Control Block                                   *
+ *                                                                    *
+ * Date       Version     Author               Description            *
+ * ---------  --------  ---------------  ---------------------------- *
+ *                                                                    *
+ * 09-12-1998   1.0        Nithya        New File containing common   *
+ *                                       Accounting  functions        *
+ * 30-04-1999   1.1     Ritesh/Sachin	  SCF: RWK-BILLING-BE-005      *
+ *                                                                    *
+ * 23-09-2002            Sameer Sawla    ENH-004 Appending CRC to     *
+ *                                       Transaction Records          *
+ *                                                                    *
+ * List of functions   :                                              *
+ *                                                                    *
+ * Function Name          Description                                 *
+ * ----------------  ------------------------------------------------ *
+ * B_PassAccEntFn			  This function takes in 1.Module Identifier  *
+ *																 2.Batch number 	    *
+ *																 3.Value Date			 *
+ *                                               4. PILE ON ERROR LIST*
+ **********************************************************************/
+
+#define LOCAL_C_BUFSIZE /* Kalyan -- AIX warning FIX */
+#define	C_BUFSIZE	261
+#include "billing.h"
+#include "core_h.h"
+#include <errno.h>
+#define	AESEP "^"
+#define  ACCTENT_MAX_REC_LEN    250
+
+EXEC SQL INCLUDE SQLCA.H;
+
+
+int	CM_PassAccEntFn(char				*p_mod_ident,
+							char				*p_batch_no,
+							char				*p_batch_date,
+							char				**argv,
+							char				*p_prnt_ind,
+							FILE				*fl_Userrep,
+							FILE				*fl_Userlog,
+							ERROR_STRUCT   **p_error_list)		
+{
+
+	/** DECLARATIONS **/
+	
+   struct sqlca sqlca;
+	
+	FILE                 *fl_AEHndOff   					= (FILE *) NULL;
+	FILE                 *fl_AERpt   						= (FILE *) NULL;
+
+	char                 l_buf[C_BUFSIZE]					= SYS_NULL_STRING;
+	char                 h_prntaeflg[2]    				= SYS_NULL_STRING;
+	char                 Run_Seq[12]							= SYS_NULL_STRING;
+	char                 l_aeflname[100] 					= SYS_NULL_STRING;
+	char                 h_system_date[SYS_DATE_LEN] 	= SYS_NULL_STRING;
+	char                 b_system_date[9] 					= SYS_NULL_STRING;
+	char						h_batch_no[5]						= SYS_NULL_STRING;
+	char						h_batch_date[SYS_DATE_LEN]		= SYS_NULL_STRING;
+
+	char						h_mod_ident							= SYS_NULL_CHAR;
+
+	int						pagenum 								= 0;	
+	int						r_pagenum 							= 1;	
+	int						currpos 								= 0;
+	int						r_currpos 							= 0;
+	int                  retstat 								= 0;
+	int                  num 									= 0;
+	int						l_fetch_count 						= 0;
+
+
+	double          		DACT									= 0;
+	double          		CACT									= 0;
+	int                  l_cact 								= 0; /* AIX 6.1 Migration Suvarna changed long int to int */
+	int                  l_dact 								= 0; /* AIX 6.1 Migration Suvarna changed long int to int */
+
+	double               DCT									= 0.0;
+	double               CCT									= 0.0;
+	double               dramt 								= 0;
+	double               cramt 								= 0;
+
+	char						h_date[9] 							= SYS_NULL_STRING;
+	char						l_value_date[SYS_DATE_LEN] 	= SYS_NULL_STRING;
+	char						l_temp[SYS_DATE_LEN] 			= SYS_NULL_STRING;
+	char						*a;
+
+
+	char                 rep_str[3]							= SYS_NULL_STRING;
+	char                 rep1_desc[41]						= SYS_NULL_STRING;
+	char                 funcdesc[61]						= SYS_NULL_STRING;
+
+	/* ENH-004 Sameer CRC */
+	char                 l_tmpaeflname[100] 				= SYS_NULL_STRING;
+	
+	char 						IbbsTmpPath[PATH_LENGTH];
+
+	/** 8.0 Sri-Lanka migration to FLEX :: After the accounting entries file is passed, a transfer script will be called to transfer the generated acc entries file to the FLEX machine. **/
+
+	char                 command[100]=SYS_NULL_STRING;
+   char                 l_ndmparam[100]=SYS_NULL_STRING;
+	/* Commented by Kalyan during AIX Migration
+	int						l_cond_srl = 0;
+	*/
+	short						l_cond_ils = 0;
+	//short						l_cond_srl = 0;
+
+	/** 8.0 Sri-Lanka migration to FLEX ends. **/
+
+	FILE 						*finifile;
+
+	/* ST bug fix - Narendra */
+   char						l_str_Repname[13]					= SYS_NULL_STRING;
+	int						l_i_temp								= 0;
+	int 						l_i_temppos							= 0;
+	int						l_run_number						= 0;
+	int						l_total_detail_lines				= 0;
+	double					l_creditline						= 0.0;
+	double					l_debitline							= 0.0;
+
+	REPORT_STRUCT *l_rep_struct = NULL;
+	/* ST bug fix - Narendra */
+
+	IACCTENT_STRUCT_H     h_iacctent_struct;
+	IACCTENT_STRUCT_I     i_iacctent_struct;
+
+   /** Added by Girish 20.02.01 for MT100 **/ /**retro**/
+	char    					l_valdate[7]						= SYS_NULL_STRING;
+   char    					l_param_str[100]					= SYS_NULL_STRING;
+   char    					l_refno[51]							= SYS_NULL_STRING;
+	char    					l_txn_ref[51]						= SYS_NULL_STRING;
+	char    					l_account[SYS_ACCOUNT_LEN]		= SYS_NULL_STRING;
+	char                 l_pay_srl_no[3]					= SYS_NULL_STRING;
+	int					l_int_pay_srl_no	=	0;
+	int 					l_count 								= 0;
+	char                 l_ca_id[21]                  	= SYS_NULL_STRING;
+	char                 l_isin[13]                    = SYS_NULL_STRING;
+	char                 l_ccycode[SYS_CCYCODE_LEN]    = SYS_NULL_STRING;
+	char                 **l_tmptxnref                 = NULL;
+	int                  num1                          = 0;      
+   short                l_acc_ibbs_cond_exists        = 0;
+   /** Ends Here **/
+ 	
+
+	char     f_sys_date[SYS_DATE_LEN]      = SYS_NULL_STRING;
+	int period_flg			=0;
+	int emu_period_flag	=0; /*Madhuri */
+	char    h_branch_code[40]               =       SYS_NULL_STRING;
+	short	  i_branch_code 						=		  0;
+	char    l_seq_num[40]                   =       SYS_NULL_STRING;
+	short	  l_fmt31_exist						=		  0;
+	short   l_brij_exist                =       0; /*Sonali, R9.0.1_cntry_002, Brij Format*/
+	char	 l_cr_txncode[40]						=		  SYS_NULL_STRING;
+	char	 l_dr_txncode[40]						=		  SYS_NULL_STRING;
+	short	 i_cr_txncode 							=		  0;
+	short	 i_dr_txncode						   =		  0;
+
+
+   /** Added by Girish to gen ESESAM & EFILE Files for Corp Act Accounting Ent **/
+   CM_SEQUENCE_INFO_H      l_seq_struct;
+   int     l_retval                        = 0;
+   char    l_inifile[PATH_LENGTH]          =SYS_NULL_STRING;
+   FILE    *l_finifile                     =(FILE *) NULL;
+   char    l_ae_path[PATH_LENGTH];
+   char    l_handoff_efile[2*PATH_LENGTH]  =  SYS_NULL_STRING;
+   char     h_passflg[2]               = SYS_NULL_STRING;/*Shikha R12_CNTR_038*/
+	short l_hu_exists =0; /* R_20.0 Suvarna - HU_Transfer of CORPACT Trades Core to CA - Flexcube */
+ 	EXEC SQL BEGIN DECLARE SECTION;
+
+	EXEC SQL VAR h_batch_no  						IS STRING;
+	EXEC SQL VAR h_batch_date  					IS STRING;
+	EXEC SQL VAR h_branch_code 					IS STRING;
+	EXEC SQL VAR l_seq_num 							IS STRING;
+	EXEC SQL VAR  l_ca_id							IS STRING;
+	EXEC SQL VAR l_account							IS STRING;
+
+
+	EXEC SQL VAR h_iacctent_struct.branch_cd  IS STRING;
+	EXEC SQL VAR h_iacctent_struct.seq_num 	IS STRING;
+	EXEC SQL VAR h_iacctent_struct.account 	IS STRING;
+	EXEC SQL VAR h_iacctent_struct.curr_code  IS STRING;
+	EXEC SQL VAR h_iacctent_struct.value_date IS STRING;
+	EXEC SQL VAR h_iacctent_struct.txn_code   IS STRING;
+	EXEC SQL VAR h_iacctent_struct.apa_code  	IS STRING;
+	EXEC SQL VAR h_iacctent_struct.narrative  IS STRING;
+	EXEC SQL VAR h_iacctent_struct.batch_no  	IS STRING;
+	EXEC SQL VAR h_iacctent_struct.batch_date IS STRING;
+	EXEC SQL VAR h_iacctent_struct.txn_ref    IS STRING;
+	EXEC SQL VAR h_iacctent_struct.static_code IS STRING;/***ISRAEL Changes Rel9.0***/
+
+   /** Added by Girish MT100 **/ /**retro**/
+	EXEC SQL VAR l_isin                       IS STRING;
+	EXEC SQL VAR l_ca_id                      IS STRING;
+	/** End Here **/
+	EXEC SQL VAR l_cr_txncode						IS STRING;
+	EXEC SQL VAR l_dr_txncode						IS STRING;
+	EXEC SQL END DECLARE SECTION;
+
+
+	/** MEMORY ALLOCATION **/
+
+	memset(l_buf,SYS_NULL_CHAR,C_BUFSIZE);
+	memset(h_prntaeflg,SYS_NULL_CHAR,2);
+	memset(Run_Seq,SYS_NULL_CHAR,12);
+	memset(h_batch_no,SYS_NULL_CHAR,5);
+	memset(h_batch_date,SYS_NULL_CHAR,SYS_DATE_LEN);
+	memset(l_aeflname,SYS_NULL_CHAR,100);
+	memset(l_tmpaeflname,SYS_NULL_CHAR,100);
+	memset(h_system_date,SYS_NULL_CHAR,SYS_DATE_LEN);
+	memset(b_system_date,SYS_NULL_CHAR,9);
+
+        h_iacctent_struct.fcy_amount = 0;
+        h_iacctent_struct.lcy_amount = 0;
+        h_iacctent_struct.exch_rate = 0;
+        h_iacctent_struct.rep_amt = 0;
+        h_iacctent_struct.rep_cus = 0;
+        h_iacctent_struct.rep_tax = 0;
+        h_iacctent_struct.rep_ser = 0;
+        h_iacctent_struct.rexrate = 0;
+
+
+	CM_WrLog(fl_Userlog,"Started Passing Accounting Entries.....",NULL,NULL);
+
+	SYS_IF_DEBUG
+	{
+   	CM_WrLog(SYS_TRACE_FILE,"\nInside CM_PassAccGenFn function\n",NULL,NULL);
+   	memset(l_buf,NULL,C_BUFSIZE);
+	   sprintf(l_buf,"The Mod_id is %s\n",p_mod_ident );
+	   CM_WrLog(SYS_TRACE_FILE,l_buf,NULL,NULL);
+
+ 	   memset(l_buf,NULL,C_BUFSIZE);
+   	sprintf(l_buf,"The Batch_no is %s\n",p_batch_no );
+   	CM_WrLog(SYS_TRACE_FILE,l_buf,NULL,NULL);
+
+ 	   memset(l_buf,NULL,C_BUFSIZE);
+   	sprintf(l_buf,"The Batch_date is %s\n",p_batch_date );
+   	CM_WrLog(SYS_TRACE_FILE,l_buf,NULL,NULL);
+	}
+
+	/** MANDATORY DATA CHECK **/
+	 	
+	if (!strcmp(p_mod_ident,SYS_NULL_STRING))
+	{
+ 		SYS_DATA_MISSING("MODULE_IDENTIFIER",SYS_NULL_STRING,SYS_NULL_STRING);
+      SYS_RETURN_FAILURE
+
+	}
+
+	if (!strcmp(p_batch_no ,SYS_NULL_STRING))
+   {
+      SYS_DATA_MISSING("BATCH_NO",SYS_NULL_STRING,SYS_NULL_STRING);
+      SYS_RETURN_FAILURE
+   }
+
+	if (!strcmp(p_batch_date ,SYS_NULL_STRING))
+   {
+      SYS_DATA_MISSING("BATCH_DATE",SYS_NULL_STRING,SYS_NULL_STRING);
+      SYS_RETURN_FAILURE
+   }
+
+
+	/********************************************************************
+						 PROCESSING BEGINS 
+		 STEP I
+	 	 The Batch number has already been generated and inserted into the
+       IACCTENT table during generation.Hence we have to make a filename
+		 from that batch no and open the acc entries hand-off file 
+		 The Filename is of the form Fxxxx where xxxx is the batch number
+		
+		 FIND THE FUNCTION IN B_AccEntlFl.pc FILE 		
+	********************************************************************/
+/* R_20.0 Suvarna - HU_Transfer of CORPACT Trades Core to CA - Flexcube - Starts */
+	l_hu_exists = 0;
+if ( SYS_FAILURE == CM_CntryCondChkFn( "ACC_ENTRIES","MV_CORE_CORPACT",&l_hu_exists,p_error_list))
+{
+	SYS_RETURN_FAILURE;
+}
+/* R_20.0 Suvarna - HU_Transfer of CORPACT Trades Core to CA - Flexcube - Ends */
+   l_fmt31_exist = 0;
+
+	if ( SYS_FAILURE == CM_CntryCondChkFn( "ACC_ENTRIES",
+   		                                 "FLEX_FORMAT31",
+           		                           &l_fmt31_exist,
+                 		                     p_error_list ) )
+   {
+  		SYS_RETURN_FAILURE;
+  	}
+
+
+   if ( CM_GetSystemParams(p_error_list) == SYS_FAILURE)
+  		SYS_RETURN_FAILURE
+
+		/** ENH-004 ****/ 
+	if(CM_CntryCondChkFn("ACC_ENTRIES",
+  	 	               	"NO_ADD_CRC",
+     	               	&l_acc_ibbs_cond_exists,
+     		            	p_error_list)==SYS_FAILURE)
+  		SYS_RETURN_FAILURE
+
+
+	/** 8.0 Sri-Lanka migration to FLEX :: After the accounting entries file is passed, a transfer script will be called to transfer the generated acc entries file to the FLEX machine. **/
+
+	//l_cond_srl = 0;
+	l_cond_ils = 0;
+
+   if ( SYS_FAILURE == CM_CntryCondChkFn( "ACC_ENTRIES",
+                                          "SCPTRANSFER",
+                                          &l_cond_ils,
+                                          p_error_list ) )
+   {
+      SYS_RETURN_FAILURE;
+   }
+	/*Sonali, R9.0.1_cntry_002, Brij Format, Start*/
+	l_brij_exist=0;
+	if ( SYS_FAILURE == CM_CntryCondChkFn( "ACC_ENTRIES",
+				"BRIJ_FORMAT",
+				&l_brij_exist,
+				p_error_list ) )
+	{
+		SYS_RETURN_FAILURE;
+	}
+	/*Sonali, R9.0.1_cntry_002, Brij Format,End*/
+
+	//if (l_cond_srl > 0)
+	if (l_cond_ils > 0)
+	{
+
+		strcpy(l_inifile,getenv("SESAM_INI_DIR") );
+		strcat(l_inifile,"Sesam.ini");
+
+		if ( (l_finifile = fopen(l_inifile,"r") )  == NULL )
+		{
+		 	SYS_RETURN_FAILURE
+	 	}
+
+		if (SYS_FAILURE == CM_ReadToken( l_finifile,
+                                       "ACCENTRIES_TRANS_SCP",
+                                       l_ndmparam,
+                                       p_error_list))
+      {
+         SYS_RETURN_FAILURE
+      }
+
+		if (fclose(l_finifile))
+			SYS_RETURN_FAILURE
+	}
+
+	/** 8.0 Sri-Lanka migration to FLEX :: ENDS. **/
+
+
+	if ( (!strcmp(p_prnt_ind, "H")) || (!strcmp(p_prnt_ind,"B")) )
+	{
+
+     /** Girish 21.01.02 , to create ESESAM.TXT and EFILE.TXT File for Corporate Action
+         Accounting Entries **/
+
+     if ( ( (!strcmp(p_mod_ident,"A") )||(!strcmp(p_mod_ident,"P") )) &&
+          ( (!strcmp(p_prnt_ind,"R")) || (!strcmp(p_prnt_ind,"B")) ) &&
+          (strcmp(g_common_params.country_code,"GR")  == 0 ) )
+     {
+       memset(&l_seq_struct, NULL, sizeof(CM_SEQUENCE_INFO_H));
+       strcpy(l_seq_struct.seqname, "HOFFFILEEXT");
+       strcpy(l_seq_struct.seq_attr1, SYS_NULL_STRING);
+       strcpy(l_seq_struct.seq_attr2, SYS_NULL_STRING);
+       strcpy(l_seq_struct.seq_attr3, SYS_NULL_STRING);
+       l_seq_struct.step_by = 1;
+       l_seq_struct.start_at = 0;
+       l_seq_struct.last_number = 99999;
+       l_seq_struct.recycle=RECYCLE_YES;
+
+       l_retval = CM_GetNextSeqNum(&l_seq_struct, p_error_list);
+       if (l_retval == SYS_FAILURE) SYS_RETURN_FAILURE
+
+       strcpy(l_inifile,getenv("SESAM_INI_DIR") );
+       strcat(l_inifile,"Sesam.ini");
+
+       if ( (l_finifile = fopen(l_inifile,"r") )  == NULL )
+          {
+            SYS_RETURN_FAILURE
+          }
+
+       if (SYS_FAILURE == CM_ReadToken( l_finifile,
+                                        "SESAM_ACCENTRIES_DIR",
+                                        l_ae_path,
+                                        p_error_list))
+          {
+            SYS_RETURN_FAILURE
+          }
+
+		 if ( l_brij_exist > 0 ) 
+		 {
+
+			 sprintf(l_aeflname, "%sESESAM%d.CSV", l_ae_path, l_retval);
+			 sprintf(l_handoff_efile, "%sEFILE%d.CSV", l_ae_path, l_retval);
+		 }
+		 else
+		 {
+			 sprintf(l_aeflname, "%sESESAM.%d", l_ae_path, l_retval);
+			 sprintf(l_handoff_efile, "%sEFILE.%d", l_ae_path, l_retval);
+		 }
+
+       if ((fl_AEHndOff = fopen(l_handoff_efile, "w"))  == (FILE *) NULL )
+          {
+            CM_InsertError(p_error_list,E_FILE_NF,SYS_NULL_STRING,
+                           SYS_NULL_STRING,SYS_NULL_STRING,
+                           __LINE__,__FILE__);
+            SYS_RETURN_FAILURE
+         }
+
+       fprintf(fl_AEHndOff,"ESESAM.TXT");
+       fclose(fl_AEHndOff);
+
+
+       printf("the l_aeflname is %s\n",l_aeflname);
+       if ((fl_AEHndOff = fopen(l_aeflname, "w"))  == (FILE *) NULL)
+          {
+            CM_InsertError(p_error_list,E_FILE_NF,SYS_NULL_STRING,
+                           SYS_NULL_STRING,SYS_NULL_STRING,
+                           __LINE__,__FILE__);
+            SYS_RETURN_FAILURE
+         }
+
+         l_rep_struct = (REPORT_STRUCT *)calloc(1, sizeof(REPORT_STRUCT));
+         SYS_MEM_ALLOC_FAIL(l_rep_struct) ;
+			if ( l_brij_exist > 0 ) 
+				sprintf(l_rep_struct->repname,"ESESAM%d.CSV",l_retval);
+			else
+				sprintf(l_rep_struct->repname,"ESESAM.%d",l_retval);
+         strcpy(l_rep_struct->repdesc, SYS_HOFF_FILE_DESC);
+         strcpy(l_rep_struct->repdate, argv[2]);
+         l_rep_struct->repwidth = 100 ;
+         strcpy(l_rep_struct->funcdesc, argv[5]);
+         strcpy(l_rep_struct->febeind, SYS_BE_IND);
+         strcpy(l_rep_struct->userid, argv[3]);
+         /**if (SYS_FAILURE == GDBInsReptFn( l_rep_struct, p_error_list))***/
+         if (SYS_FAILURE == GDBInsReptFn_new( l_rep_struct,"SESAM_ACCENTRIES_DIR", p_error_list))
+         {
+            SYS_RETURN_FAILURE
+         }
+
+			if ( l_brij_exist > 0 ) 
+				sprintf(l_rep_struct->repname,"EFILE%d.CSV",l_retval);
+			else
+				sprintf(l_rep_struct->repname,"EFILE.%d",l_retval);
+         strcpy(l_rep_struct->repdesc, SYS_HOFF_FILE_DESC);
+         strcpy(l_rep_struct->repdate, argv[2]);
+         l_rep_struct->repwidth = 100 ;
+         strcpy(l_rep_struct->funcdesc, argv[5]);
+         strcpy(l_rep_struct->febeind, SYS_BE_IND);
+         strcpy(l_rep_struct->userid, argv[3]);
+         /* if (SYS_FAILURE == GDBInsReptFn( l_rep_struct, p_error_list))*/
+         if (SYS_FAILURE == GDBInsReptFn_new( l_rep_struct,"SESAM_ACCENTRIES_DIR", p_error_list))
+         {
+            SYS_RETURN_FAILURE
+         }
+
+     }
+    else
+     {
+		printf("\n Before Entreing Baccent function ");
+		fflush(stdout);
+ 	  if (SYS_FAILURE == B_AccEntlFlFn(p_batch_no,l_aeflname,p_error_list))
+   	{
+		printf("\n In Error blcok Baccent function ");
+		fflush(stdout);
+			 CM_InsertError(p_error_list,E_HANDOFF_FILE_NG,
+								SYS_NULL_STRING,
+								 SYS_NULL_STRING,SYS_NULL_STRING,
+								 __LINE__,__FILE__);	
+      	 SYS_RETURN_FAILURE
+   	}
+
+     	printf("the l_aeflname is %s\n",l_aeflname);
+		fflush(stdout);
+		/** ENH-004  commented as of onsite retro
+		if(CM_CntryCondChkFn("ACC_ENTRIES",
+     	 	               	"NO_ADD_CRC",
+       	               	&l_acc_ibbs_cond_exists,
+        		            	p_error_list)==SYS_FAILURE)
+    		SYS_RETURN_FAILURE *******/
+		printf("\n LINE =|%d| \n ",__LINE__);
+		fflush(stdout);
+		if (l_acc_ibbs_cond_exists == 0)
+		{
+			/** Get Temporary path from ini file **/
+   		strcpy(l_inifile,getenv("SESAM_INI_DIR"));
+			strcat(l_inifile,"Sesam.ini");
+
+			if ( ( finifile=fopen(l_inifile,"r") ) == NULL)
+				SYS_RETURN_FAILURE
+
+			if(CM_ReadToken(finifile,"SESAM_LOG_DIR",IbbsTmpPath,p_error_list)==SYS_FAILURE)
+				SYS_RETURN_FAILURE
+
+			if (fclose(finifile))
+				SYS_RETURN_FAILURE
+	
+			/** Create the file in temp path **/
+			strcpy(l_tmpaeflname,l_aeflname);
+			strcpy(l_aeflname,IbbsTmpPath);
+		printf("\n LINE =|%d| \n ",__LINE__);
+		fflush(stdout);
+
+
+/****** 6.5 ST Fix....The handoff file name was being created with F<batchno>, while the 
+							common_report table was populated with filename as just <batchno> *******/
+			l_i_temppos=0;	
+			for(l_i_temp=0;l_tmpaeflname[l_i_temp]!='\0';l_i_temp++)
+				if (l_tmpaeflname[l_i_temp]=='/')
+					l_i_temppos=l_i_temp+1;
+			
+			for(l_i_temp=0;l_tmpaeflname[l_i_temppos]!='\0';l_i_temp++,l_i_temppos++)
+				l_str_Repname[l_i_temp]=l_tmpaeflname[l_i_temppos];
+
+			l_str_Repname[l_i_temp]='\0';
+
+			strcat(l_aeflname,l_str_Repname);
+		}
+		/** End 0f ENH-004 **/
+
+		printf("\n LINE =|%d| \n ",__LINE__);
+		fflush(stdout);
+		if ( (!strcmp(p_prnt_ind,"R")) || (!strcmp(p_prnt_ind,"B"))	)
+		{
+   		/** OPEN THE HAND_OFF FILE WITH THE GENERATED FILE NAME **/
+
+       	printf("the l_aeflname just before open is %s\n",l_aeflname);
+		   if ((fl_AEHndOff = fopen(l_aeflname,"w"))  == (FILE *) NULL)
+   		{
+      		CM_InsertError(p_error_list,E_FILE_NF,SYS_NULL_STRING,
+         		            SYS_NULL_STRING,SYS_NULL_STRING,
+            		         __LINE__,__FILE__);
+      		SYS_RETURN_FAILURE
+   		}
+
+			/* ST bug fix - Narendra - Inserting record in the common_report table */ 
+			l_i_temppos=0;	
+			for(l_i_temp=0;l_aeflname[l_i_temp]!='\0';l_i_temp++)
+				if (l_aeflname[l_i_temp]=='/')
+					l_i_temppos=l_i_temp+1;
+			
+			for(l_i_temp=0;l_aeflname[l_i_temppos]!='\0';l_i_temp++,l_i_temppos++)
+				l_str_Repname[l_i_temp]=l_aeflname[l_i_temppos];
+
+			l_str_Repname[l_i_temp]='\0';
+
+			l_rep_struct = (REPORT_STRUCT *)calloc(1, sizeof(REPORT_STRUCT));
+			SYS_MEM_ALLOC_FAIL(l_rep_struct) ;
+
+			strcpy(l_rep_struct->repname, l_str_Repname);
+			strcpy(l_rep_struct->repdesc, SYS_HOFF_FILE_DESC);
+			strcpy(l_rep_struct->repdate, argv[2]);
+			l_rep_struct->repwidth = 100 ;
+			strcpy(l_rep_struct->funcdesc, argv[5]);
+			strcpy(l_rep_struct->febeind, SYS_BE_IND);
+			strcpy(l_rep_struct->userid, argv[3]);
+			
+
+			if (SYS_FAILURE == GDBInsReptFn_new( l_rep_struct,"SESAM_ACCENTRIES_DIR",
+                                  p_error_list ))
+			{
+   			SYS_RETURN_FAILURE
+			}
+
+			/* ST bug fix - Narendra */
+
+		}
+    } /**  ESESAM.TXT & EFILE.TXT Ends here **/
+
+   }
+
+		printf("\n LINE =|%d| \n ",__LINE__);
+		fflush(stdout);
+
+
+	/****************************************************************
+
+	STEP II
+   GENERATE REPORT FILNAME FOR ACCOUNTING ENTRIES REPORT FILE 
+   The gdbgenrepfilefn function itself opens the report
+	 and returns the file handler 
+	****************************************************************/
+
+
+	if ( (!strcmp(p_prnt_ind,"R") ) || (!strcmp(p_prnt_ind,"B")) )
+	{
+   	if (!strcmp(p_mod_ident,"P"))
+ 		{	
+     		strcpy(rep_str,"BP");
+    		strcpy(rep1_desc,"AE Rpt:Bill Payments");
+     		strcpy(funcdesc,"BillingPaymentAccountingEntries");
+		 }
+	
+		 if (!strcmp(p_mod_ident,"B"))
+	 	 {
+     		strcpy(rep_str,"BB");
+    		strcpy(rep1_desc,"AE Rpt: Bill Accounting");
+     		strcpy(funcdesc,"BillingAccountingEntries");
+	 	 }		
+		
+		 if (!strcmp(p_mod_ident,"A"))
+	 	 {
+     		strcpy(rep_str,"CA");
+    		strcpy(rep1_desc,"AE Rpt :CA Accounting");
+     		strcpy(funcdesc,"CorpActionsAccountingEntries");
+		 }
+
+		 if (!strcmp(p_mod_ident,"C"))
+	 	 {
+     		strcpy(rep_str,"CO");
+    		strcpy(rep1_desc,"AE Rpt :Core Accounting");
+     		strcpy(funcdesc,"CoreAccountingEntries");
+		 }
+
+		 if (!strcmp(p_mod_ident,"T"))
+		 {
+			strcpy(rep_str,"CT");
+			strcpy(rep1_desc,"Contingent Accounting Entries");
+			strcpy(funcdesc,"Contingent Accounting Entries");
+		 }
+
+		 /*** changed on 02/07/99 Saddy : if report file pointer is passed, 
+				then use that, else call GDBGenRepFileFn; this was done because
+				during Acc Entries generation for Core and CAE, they themselves
+				generate a report file and pass the handle, for all others the
+				report file parameter will be null ***/
+
+		 if (fl_Userrep != NULL)
+		 {
+			fl_AERpt = fl_Userrep;
+		 }
+		 else
+		 {
+		 	if (SYS_FAILURE == GDBGenRepFileFn (rep_str,rep1_desc,100,
+                                         argv[5],argv,&fl_AERpt,p_error_list))
+   	 	{
+		   	    CM_InsertError(p_error_list,E_FILE_NF, "UserErrorLogReport",
+      		                SYS_NULL_STRING, SYS_NULL_STRING,
+            		          __LINE__,__FILE__) ;
+       	  		 SYS_RETURN_FAILURE
+	 	 	}
+		 }
+	}
+
+		printf("\n LINE =|%d| \n ",__LINE__);
+		fflush(stdout);
+	if(l_fmt31_exist==1)
+	{
+		printf("ME is Here!!!!!!!!!!\n");
+		fflush(stdout);
+      EXEC SQL SELECT FIELD_VAL
+         INTO :h_branch_code:i_branch_code
+         FROM GSSPLVAL
+         WHERE COUNTRY  =  :g_common_params.country_code
+         AND   MAIN_FUNC_AREA  = 'ACC_ENT'
+         AND   SUB_FUNC    =  'FORMAT31_BRNCH_CODE';
+
+      SYS_CHECK_SQL_ERROR
+
+      EXEC SQL SELECT FORMAT31SEQ.NEXTVAL
+         INTO :l_seq_num
+         FROM DUAL;
+		/***strcpy(l_seq_num,"100");***/
+		printf("l_seq_num is %s\n",l_seq_num);
+		fflush(stdout);
+
+      SYS_CHECK_SQL_ERROR
+		printf("p_mod_ident[0] is %c\n",p_mod_ident[0]);
+
+		if(p_mod_ident[0]=='A')
+		{
+			EXEC SQL SELECT  FIELD_VAL
+               INTO  :l_cr_txncode:i_cr_txncode
+               FROM GSSPLVAL
+               WHERE COUNTRY  =  :g_common_params.country_code
+               AND   MAIN_FUNC_AREA  = 'ACC_ENT'
+               AND   SUB_FUNC    =  'CA_CR_TXNCODE';
+
+         SYS_CHECK_SQL_ERROR
+
+         EXEC SQL SELECT  FIELD_VAL
+                  INTO  :l_dr_txncode:i_dr_txncode
+                  FROM GSSPLVAL
+                  WHERE COUNTRY  =  :g_common_params.country_code
+                  AND   MAIN_FUNC_AREA  = 'ACC_ENT'
+                  AND   SUB_FUNC    =  'CA_DR_TXNCODE';
+
+         SYS_CHECK_SQL_ERROR
+
+		}
+		else if((p_mod_ident[0]=='C') || (p_mod_ident[0]=='T'))
+		{
+			EXEC SQL SELECT  FIELD_VAL
+					INTO 	:l_cr_txncode:i_cr_txncode
+					FROM GSSPLVAL 	
+					WHERE COUNTRY  =  :g_common_params.country_code
+					AND 	MAIN_FUNC_AREA  = 'ACC_ENT'
+					AND	SUB_FUNC    =  'CORE_CR_TXNCODE';
+		
+			SYS_CHECK_SQL_ERROR
+			printf("l_seq_num is %s\n",l_seq_num);
+			fflush(stdout);
+
+			EXEC SQL SELECT  FIELD_VAL
+						INTO 	:l_dr_txncode:i_dr_txncode
+						FROM GSSPLVAL 	
+						WHERE COUNTRY  =  :g_common_params.country_code
+						AND 	MAIN_FUNC_AREA  = 'ACC_ENT'
+						AND	SUB_FUNC    =  'CORE_DR_TXNCODE';
+		
+			SYS_CHECK_SQL_ERROR
+		}
+		else if ((p_mod_ident[0]=='B') || (p_mod_ident[0]=='P'))
+		{
+			sprintf(l_cr_txncode,"%s",g_bill_params.credit_txncode);
+			sprintf(l_dr_txncode,"%s",g_bill_params.debit_txncode);
+		}
+		printf("l_seq_num is %s\n",l_seq_num);
+		fflush(stdout);
+
+	}
+
+
+
+		/******************************************************************
+		STEP IV	
+   	INTO A CURSOR SELECT RECORDS FROM IACCTENT FOR THE PASSED BATCH NO
+   	AND DATE 
+		******************************************************************/
+
+	strcpy(h_batch_no,p_batch_no);
+	strcpy(h_batch_date,p_batch_date);
+	h_mod_ident = p_mod_ident[0];
+/* Shikha R12_CNTR_038 added decode to cursor*/
+	printf("Shikha argv[9] :%s:\n",argv[9]);
+/*	if (SYS_FAILURE == CBStrSplitFn( argv[9],
+				',',
+				&num,
+				&temp) )
+	{
+		fprintf(fl_Userlog,"Failed to split input string\n");
+		SYS_RETURN_FAILURE;
+	}
+ strcpy(h_passflg,temp[1]); */
+ strncpy(h_passflg,argv[9],1);
+ printf("Shikha :%s:\n",h_passflg);
+ 
+    EXEC SQL DECLARE PASSAE CURSOR FOR
+    SELECT * FROM IACCTENT
+    WHERE  BATCH_NO   		=:h_batch_no 
+			  AND BATCH_DATE	=:h_batch_date 	
+	 		  AND MOD_IDENT	=:h_mod_ident				
+			  AND STATUS 		= decode(:h_passflg,'N','P','G')
+    ORDER BY REC_IDENT,to_number(SEQ_NUM); 
+
+    EXEC SQL OPEN PASSAE;
+
+    SYS_CHECK_SQL_ERROR;
+
+	 if (sqlca.sqlcode <0)
+	 {
+		fprintf(SYS_TRACE_FILE,"DB ERROR IN IACCTENT\n");
+		SYS_RETURN_FAILURE
+	 }
+	
+	 for(;;)
+    {
+         memset(&h_iacctent_struct,NULL,sizeof(IACCTENT_STRUCT_H));
+			memset(&i_iacctent_struct,NULL,sizeof(IACCTENT_STRUCT_I));/* Added during 6.0 POLUAT Fix */ /*Pol Retro*/
+			
+         EXEC SQL FETCH PASSAE INTO
+         :h_iacctent_struct:i_iacctent_struct;
+			
+			SYS_CHECK_SQL_ERROR;
+
+         if (sqlca.sqlcode == 1403)
+         {
+				if (l_fetch_count  == 0)
+				{
+					CM_InsertError(p_error_list,E_BATCH_NUM_NF,
+										p_batch_no, SYS_NULL_STRING,
+										SYS_NULL_STRING,__LINE__,__FILE__);
+										/**p_batch_no, SYS_TRACE_FILE, 
+										SYS_TRACE_FILE,__LINE__,__FILE__); **** Tech Fix Ashwin ****/
+
+					fprintf(fl_Userlog,"No records in IACCTENT TABLE\n");
+					SYS_RETURN_FAILURE
+				}
+				else
+				{
+
+					fprintf(SYS_TRACE_FILE,"NO MORE RECORDS IN IACCTENT.\n");
+            	break;
+				}
+         }	
+
+			l_fetch_count++;
+
+			/* Added during 6.0 POLUAT Fix */ /* Pol Retro */
+			if( (i_iacctent_struct.i_seq_num == -1) && (l_fetch_count > 1))
+			{
+			  sprintf( h_iacctent_struct.seq_num,"%d",atoi(Run_Seq)+1); /* AIX 6.1 Migration Suvarna changed atol to atoi */
+			}
+			/* End of Addition for 6.0 POLUAT Fix */
+
+			if (l_fetch_count == 1)
+			{
+
+
+				if(SYS_FAILURE == ( B_PrntHdrDet(p_mod_ident,
+                 					  p_batch_no,
+                 					  p_batch_date,
+                 					  &l_run_number,
+                 					  &l_total_detail_lines,
+                 					  &l_creditline,
+                 					  &l_debitline,
+                 					  p_error_list)))
+					SYS_RETURN_FAILURE
+					
+					
+				if ( (!strcmp(p_prnt_ind,"R") ) || (!strcmp(p_prnt_ind,"B")) )
+				{
+					if (SYS_FAILURE == CM_GetSystemDate(h_system_date,p_error_list) )
+					{
+						fprintf(fl_Userlog,"Failed to Get System Date\n"); 
+						SYS_RETURN_FAILURE
+					}
+
+					/** FOR CORE WHEN THIS FUNCTION IS CALLED AT THE TIME OF
+						 GENERATION , WE DON"T OPEN THE HAND OFF FILE ,
+						 THEREFORE , WE JUST PRINT THE BATCH NUMBER AS FILE NAME **/
+
+					if (	(!strcmp(p_prnt_ind,"R") ) && 
+							( (!strcmp(p_mod_ident,"C")) || (!strcmp(p_mod_ident ,"T") ) )
+						)
+					{
+						strcpy(l_aeflname,"Batch No."); 					
+						strcat(l_aeflname,p_batch_no);
+					}
+
+
+					/***PRINT HEADER OF REP FILE ***/
+					/*Shikha R12_CNTR_038 Change the header for reset report*/
+               if(!strcmp(h_passflg,"N"))
+					{
+						strcpy(l_aeflname,"Reset Accounting Entries");
+					}
+		    		B_PrntAERepHdr(fl_AERpt,l_aeflname,p_batch_no,
+										p_mod_ident,h_system_date,
+										&r_pagenum,&r_currpos,
+										p_error_list);
+				}
+
+				if ( (!strcmp(p_prnt_ind,"H") ) || (!strcmp(p_prnt_ind,"B")) )
+				{
+ 					/** B_GetSystemDate returns the date in the yyyymmdd format **/
+
+				   if (SYS_FAILURE == B_GetSystemDate(b_system_date,p_error_list) )
+   				{
+      				SYS_IF_DEBUG
+      				{
+         				fprintf(fl_Userlog,"Failed to get system date in yyyymmdd format\n");
+      				}
+ 		     			SYS_RETURN_FAILURE
+   				}
+
+					/** PRINT HEADER OF HAND OFF FILE **/
+
+					if(l_fmt31_exist ==1)
+					{
+						printf(" calling CM_PrintHdrFormat31 fn\n");
+						fflush(stdout);
+						CM_PrintHdrFormat31(  	fl_AEHndOff,
+            						            b_system_date,
+            	      	      				p_batch_no,
+         	            	   				l_seq_num,
+      	                  					h_branch_code,
+   	                     					p_error_list);
+		
+					}
+					else
+					{
+						if((l_brij_exist) && 
+								(strcmp(p_mod_ident,"A") == 0 || strcmp(p_mod_ident,"P")==0 ))
+						{
+							printf("\n Skip Header printing "); /** Again a UAT 901 change **/
+						}
+						else
+						{
+							B_PrntAEHndOffHdr(fl_AEHndOff, p_batch_no ,
+									b_system_date,
+									p_mod_ident,
+									l_run_number,
+									l_total_detail_lines,
+									l_creditline,
+									l_debitline,
+									p_error_list); 
+						}
+					}
+			   }
+			
+			} /** FETCH COUNT == 1 **/
+
+
+			/****************************************************************************
+			STEP V
+			CALL THE FUNCTION TO PRINT THE BODY OF THE HAND-OFF FILE
+			CALL THE FUNCTION TO PRINT THE BODY OF THE REPORT 
+			****************************************************************************/
+
+			if ( (!strcmp(p_prnt_ind,"H") ) || (!strcmp(p_prnt_ind,"B")) )
+			{
+
+               if(l_fmt31_exist ==1)
+               {
+                  CM_PrintRecFormat31(    fl_AEHndOff,
+														h_iacctent_struct,
+                                          h_branch_code,
+                                          l_seq_num,
+														l_cr_txncode,
+														l_dr_txncode,	
+                                          p_error_list);
+
+               }
+					else if(l_brij_exist >0) /*Sonali, R9.0.1_cntry_002, Brij Format*/
+					{
+						/** TUX : Please handle function return error codes ***/
+						if (SYS_FAILURE == B_PrntDetAEBRIJHndOff(fl_AEHndOff,
+																			h_iacctent_struct,
+																			p_error_list))
+						{
+         				fprintf(fl_Userlog,"\n****** Failed from BRIJ printing \n");
+							SYS_RETURN_FAILURE ;
+						}
+					}
+               else
+               {
+
+         			B_PrntDetAEHndOff(fl_AEHndOff,
+									   h_iacctent_struct, 
+										p_error_list); 
+					}
+										/**retro**/
+			/** Added by Girish 20.02.01 Genration of MT100 Message **/ 
+				printf("\n Suvarna l_hu_exists is [%d]",l_hu_exists);
+            if (( strlen(h_iacctent_struct.txn_ref) && !(strcmp(p_mod_ident, "A"))
+																	&& ( h_iacctent_struct.d_c_ind == C_IND ) ) && (l_hu_exists ==0))	/* R_20.0 Suvarna - HU_Transfer of CORPACT Trades Core to CA - Flexcube - Added indicator for Hungary*/
+				   {
+						EXEC SQL SELECT
+						     		TO_CHAR(TO_DATE(:h_iacctent_struct.value_date,'YYYYMMDD'),'YYMMDD')
+							  		INTO :l_valdate
+							  		FROM DUAL;
+             
+            		SYS_CHECK_SQL_ERROR
+						strcpy(l_txn_ref, h_iacctent_struct.txn_ref);
+						
+						if (SYS_FAILURE == CBStrSplitFn( l_txn_ref,
+																	'|',
+																   &num1,
+																   &l_tmptxnref ))
+                    {
+							fprintf(fl_Userlog,"Failure  while splitting %s \n",l_txn_ref);
+						   SYS_RETURN_FAILURE
+						  }
+						
+						memset(l_pay_srl_no,SYS_NULL_CHAR,sizeof(l_pay_srl_no));
+						strcpy(l_ca_id,   l_tmptxnref[0]); /** for CA_ID **/
+						strcpy(l_account, l_tmptxnref[1]); /** for ACCOUNT **/
+						strcpy(l_pay_srl_no, l_tmptxnref[2]); /** for ACCOUNT **/
+						strcpy(l_ccycode, l_tmptxnref[3]); /** Pymnt CCY **/
+						strncpy(l_refno,h_iacctent_struct.narrative,50);
+						l_int_pay_srl_no = atoi(l_pay_srl_no);
+
+						l_refno[50]='\0'; /** 68 UAT Error Chgs to ensure that there are no junk characters in the narrative ***/
+
+						EXEC SQL SELECT isin
+									  INTO :l_isin
+									  FROM CSECURITY
+                            WHERE secode = ( SELECT a.secode
+															  FROM AEVENT a
+                                              WHERE a.ca_id = :l_ca_id );
+
+                  SYS_CHECK_SQL_ERROR 
+						memset(l_param_str,NULL,100);
+	         		sprintf(l_param_str,"%s;%s;%s;%f;C;%s;%s;",l_valdate,h_iacctent_struct.curr_code,l_ccycode,
+				                                         h_iacctent_struct.rep_amt,l_isin,p_mod_ident);
+
+
+
+						/*Nikhil UAT 12.1 TD 6373 Fix. MT100 should not be generated for AIPS Reversals*/
+						printf("\n NIKS TD 6373 l_pay_srl_no :%s:",l_pay_srl_no);
+						printf("\n NIKS TD 6373 l_int_pay_srl_no :%d:",l_int_pay_srl_no);
+						printf("\n NIKS TD 6373 l_account :%s:",l_account);
+						printf("\n NIKS TD 6373 l_ca_id :%s:",l_ca_id);
+
+						l_count =0;
+						EXEC SQL SELECT count(*) into :l_count
+							from apayment
+							where ca_id = :l_ca_id and
+									account = :l_account and
+									pay_srl_nbr = :l_int_pay_srl_no and 
+									pay_stat in ('AR','IC'); /*Shikha UAT 150 TD:8567 */
+
+						SYS_CHECK_SQL_ERROR
+							
+						printf("\n NIKS TD 6373 l_count :%d:",l_count);
+						if(l_count == 0)
+						{
+						printf("\n NIKS TD 6373 Gen 100N01");
+						if (SYS_FAILURE == GBDbInsIMSGENT("100N01",
+															  		l_refno,
+															  		l_account,
+															  		'Y', 
+															  		l_param_str,
+															  		p_error_list))
+                		{
+								/** if no Msg is generated ,just put the info into the log file and go ahead with the
+									 passing ..Seems crazy, that's the fact ..let them do it manaully **/
+					         fprintf(fl_Userlog,"MT100 Message Not generated for account %s refno %s\n",l_account,l_refno);
+	             		}
+						}
+               }
+					/** MT100 Ends Here **/
+			}
+										/**retro ends**/
+
+			if ( (!strcmp(p_prnt_ind,"R") ) || (!strcmp(p_prnt_ind,"B")) )
+			{
+				/* SCF: RWK-BILLING-BE-005 */
+
+				if ( h_mod_ident == 'B' )
+				{
+					if ( h_iacctent_struct.rep_tax > 0 )
+					{
+						h_iacctent_struct.rep_cus = h_iacctent_struct.rep_tax;
+					}
+					else if ( h_iacctent_struct.rep_ser > 0 )
+					{
+						h_iacctent_struct.rep_cus = h_iacctent_struct.rep_ser;
+					}
+				}
+
+   	      B_PrntAERepDet( fl_AERpt,l_aeflname,
+									 p_mod_ident,
+									p_batch_no,
+									&h_iacctent_struct,
+									&r_currpos,
+                  		   &r_pagenum, 
+									h_system_date,
+									p_error_list);
+			}
+
+	     if (h_iacctent_struct.d_c_ind == D_IND)
+   	  { /* since version 6.1 will go live in jan 2002  , we are reverting the changes and doing a sum on lcy_amount
+			as it should happen after emu period for grreece  - Thus All countries will have summing on lcy_amount */ 
+       	/* DCT  = DCT + h_iacctent_struct.fcy_amount;		
+        	 DACT = DACT + atof(h_iacctent_struct.account); */ 
+
+			 /**if (strcmp(g_common_params.country_code,"GR")  == 0 )**/
+			 if ((strcmp(g_common_params.country_code,"GR")  == 0 ) && (p_mod_ident[0] != 'P'))
+				   DCT  = DCT + h_iacctent_struct.fcy_amount;  
+			 else	
+			 		DCT  = DCT + h_iacctent_struct.lcy_amount;  
+
+		    DACT = DACT + atof(h_iacctent_struct.account);
+ 	     }
+
+		  if (h_iacctent_struct.d_c_ind == C_IND)
+        {
+			/* since version 6.1 will go live in jan 2002  , we are reverting the changes and doing a sum on lcy_amount
+				as it should happen after emu period for grreece  - Thus All countries will have summing on lcy_amount 
+      	  CCT  = CCT + h_iacctent_struct.fcy_amount;   
+      	  CACT = CACT + atof(h_iacctent_struct.account);  */
+
+			  /**if (strcmp(g_common_params.country_code,"GR")  == 0 )**/
+			  if ((strcmp(g_common_params.country_code,"GR")  == 0 ) && (p_mod_ident[0] != 'P'))
+				   CCT  = CCT + h_iacctent_struct.fcy_amount;
+			  else
+			  		CCT  = CCT + h_iacctent_struct.lcy_amount;
+
+			  	CACT = CACT + atof(h_iacctent_struct.account);
+		 }
+
+        strcpy(Run_Seq, h_iacctent_struct.seq_num);
+
+    } /* for loop ends **/
+
+	if ( (!strcmp(p_prnt_ind,"H") ) || (!strcmp(p_prnt_ind,"B")) )
+	{	
+        /** Print the footer of the accounting entries hand -off file **/
+         /** Girish 24.01.02 User don't need to have the Footer..Come on..where??...ask the user ***/
+         /**if (( p_mod_ident[0] != 'A') || (strcmp(g_common_params.country_code,"GR") ))**/
+         if (( ( p_mod_ident[0] != 'A')&&( p_mod_ident[0] != 'P')) || (strcmp(g_common_params.country_code,"GR") ))
+            {
+	
+		        if(l_fmt31_exist ==1)
+              {
+
+						printf(" Just before entering CM_PrintTrlFormat31 **p_batch_no is %s*%s*%s*%lf*%lf*%s\n",p_batch_no,l_seq_num,Run_Seq,DCT,CCT,h_branch_code);
+						fflush(stdout);
+						CM_PrintTrlFormat31(fl_AEHndOff,
+                     	   				p_batch_no,
+                        					l_seq_num,
+                        					Run_Seq,
+                        					DCT,
+                        					CCT,
+                        					h_branch_code,
+                        					p_error_list);
+					}
+					else
+					{
+       				B_PrntFootAEHndOff( fl_AEHndOff,Run_Seq,
+           	   			               p_batch_no,
+													p_mod_ident,
+            	         	   		   DCT,CCT,DACT,CACT,
+                 	         	  		   p_error_list );
+					}
+				}	
+	
+	}
+
+	/** PRINT THE FOOTER OF THE REPORT **/
+
+        
+
+	if ( (!strcmp(p_prnt_ind,"R") ) || (!strcmp(p_prnt_ind,"B")) )
+	{
+         B_PrntAERepFooter(fl_AERpt,l_aeflname,&CCT,&DCT,
+         					&CACT, &DACT,p_mod_ident,
+								p_batch_no,&r_currpos,
+								&r_pagenum,h_system_date,g_common_params.domestic_curr_code,
+								p_error_list);
+	}
+			
+				
+	/** CLOSE THE FILE POINTERS **/
+	
+	if ( (!strcmp(p_prnt_ind,"H") ) || (!strcmp(p_prnt_ind,"B")) )
+	{
+		fclose(fl_AEHndOff);
+	}
+
+	if ( (!strcmp(p_prnt_ind,"R") ) || (!strcmp(p_prnt_ind,"B")) )
+	{
+		if (SYS_FAILURE == GDBClosRepFlFn(fl_AERpt, p_error_list) )
+		{
+			fprintf(fl_Userlog,"Failed To Close The Accounting Entries Report File\n");
+			SYS_RETURN_FAILURE
+		}
+	}		
+
+   /** ENH-004 Rel 6.4 **/
+   /** Re-open the handoff file and add CRC to each transaction record **/
+   if ( (!strcmp(p_prnt_ind,"H") ) || (!strcmp(p_prnt_ind,"B")) )
+   {
+    if ( l_acc_ibbs_cond_exists == 0 )
+    {
+		CM_WrLog(fl_Userlog,"Now Appending CRC.....",NULL,NULL);
+		printf("\n Sent File name is |%s| temp fileanme is |%s| ",l_aeflname,l_tmpaeflname);
+      if (SYS_FAILURE == B_PrntAEHndOffCrc(l_aeflname,l_tmpaeflname, fl_Userlog, p_error_list ))
+      {
+         fprintf(fl_Userlog,"Failed To add CRC to Accounting Entries Hand-off File\n");
+         SYS_RETURN_FAILURE
+      }
+	 }
+   }
+
+	/** 8.0 Sri-Lanka migration to FLEX :: After the accounting entries file is passed, a transfer script will be called to transfer the generated acc entries file to the FLEX machine. **/
+	
+	//if (l_cond_srl > 0)
+	if (l_cond_ils > 0)
+	{
+		strcpy(command,l_ndmparam);
+
+		fprintf(fl_Userlog, "Now about to call the Accounting Entries Transfer Script :-->> %s\n", command);
+		fflush(fl_Userlog);
+
+		if ((system(command))!= 0)
+   	{
+      	fprintf(fl_Userlog,"Acc Entries Transfer Script Failed with an Error Code = (%d).\n", errno);
+			fflush(fl_Userlog);
+
+      	SYS_RETURN_FAILURE
+ 		} 
+		
+		fprintf(fl_Userlog, "Accounting Entries Transfer Script has successfully transmitted the file to FLEX.\n");
+		fflush(fl_Userlog); 	
+	}
+
+	CM_WrLog(fl_Userlog,"Finished Passing Accounting Entries......",NULL,NULL);
+   /** End of ENH-004 Rel 6.4 **/
+
+	SYS_RETURN_SUCCESS;
+
+    /** EXIT BLOCK **/
+
+LBL_EXIT_FAILURE:
+    SYS_IF_DEBUG
+    {
+        CM_WrLog(SYS_TRACE_FILE, "Exiting unsuccessfully out of B_PassAccEntries().\n", (ERROR_STRUCT **)NULL, (SYS_ENVIRON_STRUCT *)NULL);
+    }
+   return (SYS_FAILURE);
+
+LBL_EXIT_SUCCESS:
+    SYS_IF_DEBUG
+    {
+      CM_WrLog(SYS_TRACE_FILE,"Exiting succesfully out of B_PassAccEntries().\n",(ERROR_STRUCT **)NULL, (SYS_ENVIRON_STRUCT *)NULL);
+    }
+   return (SYS_SUCCESS);
+}
+
+int B_PrntHdrDet(char *p_mod_ident,
+					  char *p_batch_no,
+			  		  char *p_batch_date,
+				 	  int	*p_run_number,
+				 	  int *p_total_detail_lines,
+				     double *p_creditline,
+				     double *p_debitline,
+					  ERROR_STRUCT   **p_error_list)
+{
+	int 						 retval = 0;
+   IACCTENT_STRUCT_H     l_h_iacctent_struct;
+   IACCTENT_STRUCT_I     l_i_iacctent_struct;
+	CM_SEQUENCE_INFO_H    h_seq_info;
+ 
+	memset(&h_seq_info, NULL, sizeof(CM_SEQUENCE_INFO_H));
+
+   EXEC SQL BEGIN DECLARE SECTION;
+   
+   EXEC SQL VAR l_h_iacctent_struct.branch_cd  IS STRING;
+   EXEC SQL VAR l_h_iacctent_struct.seq_num    IS STRING;
+   EXEC SQL VAR l_h_iacctent_struct.account    IS STRING;
+   EXEC SQL VAR l_h_iacctent_struct.curr_code  IS STRING;
+   EXEC SQL VAR l_h_iacctent_struct.value_date IS STRING;
+   EXEC SQL VAR l_h_iacctent_struct.txn_code   IS STRING;
+   EXEC SQL VAR l_h_iacctent_struct.apa_code   IS STRING;
+   EXEC SQL VAR l_h_iacctent_struct.narrative  IS STRING;
+   EXEC SQL VAR l_h_iacctent_struct.batch_no   IS STRING;
+   EXEC SQL VAR l_h_iacctent_struct.batch_date IS STRING;
+   EXEC SQL VAR l_h_iacctent_struct.txn_ref    IS STRING;
+   EXEC SQL VAR l_h_iacctent_struct.static_code IS STRING; /***ISRAEL Changes Rel9.0***/
+
+	EXEC SQL END DECLARE SECTION;
+
+   l_h_iacctent_struct.fcy_amount = 0;
+   l_h_iacctent_struct.lcy_amount = 0;
+   l_h_iacctent_struct.exch_rate = 0;
+   l_h_iacctent_struct.rep_amt = 0;
+   l_h_iacctent_struct.rep_cus = 0;
+   l_h_iacctent_struct.rep_tax = 0;
+   l_h_iacctent_struct.rep_ser = 0;
+   l_h_iacctent_struct.rexrate = 0;
+
+   /* Populate the structure for generation of the next Sequence Number from GSEQNUM*/
+
+   strcpy(h_seq_info.seqname, "AEHOFF");
+   strcpy(h_seq_info.seq_attr1, SYS_NULL_STRING);
+   strcpy(h_seq_info.seq_attr2, SYS_NULL_STRING);
+   strcpy(h_seq_info.seq_attr3, SYS_NULL_STRING);
+   h_seq_info.step_by = 1;
+   h_seq_info.start_at = 1;
+   h_seq_info.last_number = 99999;
+   h_seq_info.recycle = RECYCLE_EOD;
+
+   retval = CM_GetNextSeqNum(&h_seq_info,p_error_list);
+
+   if (retval != SYS_FAILURE)
+   	*p_run_number = retval;
+   else
+   	{
+   		CM_WrLog(SYS_TRACE_FILE,"Unable to get the Next Sequence Number\n",NULL,NULL);
+   		SYS_RETURN_FAILURE
+   	}
+
+	 EXEC SQL SELECT NVL(COUNT(*),0)
+	 INTO :*p_total_detail_lines
+    FROM IACCTENT
+    WHERE  BATCH_NO = :p_batch_no
+    AND BATCH_DATE  = :p_batch_date
+    AND MOD_IDENT   = :p_mod_ident
+    AND STATUS      = 'G';
+
+    EXEC SQL DECLARE PASSAE_TMP CURSOR FOR
+    SELECT * FROM IACCTENT
+    WHERE  BATCH_NO        =:p_batch_no
+           AND BATCH_DATE  =:p_batch_date
+           AND MOD_IDENT   =:p_mod_ident
+           AND STATUS      = 'G'
+    ORDER BY REC_IDENT,to_number(SEQ_NUM);
+
+    EXEC SQL OPEN PASSAE_TMP;
+
+    SYS_CHECK_SQL_ERROR;
+
+    if (sqlca.sqlcode <0)
+    {
+      fprintf(SYS_TRACE_FILE,"DB ERROR IN IACCTENT\n");
+      SYS_RETURN_FAILURE
+    }
+
+    for(;;)
+    {
+         memset(&l_h_iacctent_struct,NULL,sizeof(IACCTENT_STRUCT_H));
+         memset(&l_i_iacctent_struct,NULL,sizeof(IACCTENT_STRUCT_I));
+
+         EXEC SQL FETCH PASSAE_TMP INTO
+         :l_h_iacctent_struct:l_i_iacctent_struct;
+
+         SYS_CHECK_SQL_ERROR;
+
+         if (sqlca.sqlcode == 1403)
+         	{
+               fprintf(SYS_TRACE_FILE,"NO MORE RECORDS IN IACCTENT.\n");
+               break;
+         	}
+
+			if(l_h_iacctent_struct.d_c_ind == C_IND)
+				{
+					if ((strcmp(g_common_params.country_code,"GR")  == 0 ) && (p_mod_ident[0] =='P')) 
+					   *p_creditline = *p_creditline + l_h_iacctent_struct.lcy_amount;
+					else
+					   *p_creditline = *p_creditline + l_h_iacctent_struct.fcy_amount;
+				}
+			else if ( l_h_iacctent_struct.d_c_ind == D_IND )
+				{
+					if ((strcmp(g_common_params.country_code,"GR")  == 0 ) && (p_mod_ident[0] =='P')) 
+					   *p_debitline = *p_debitline + l_h_iacctent_struct.lcy_amount;
+					else
+					   *p_debitline = *p_debitline + l_h_iacctent_struct.fcy_amount;
+				}
+	}
+	SYS_RETURN_SUCCESS;
+
+LBL_EXIT_FAILURE:
+    SYS_IF_DEBUG
+    {
+        CM_WrLog(SYS_TRACE_FILE, "Exiting unsuccessfully out of B_PrntHdrDet().\n", (ERROR_STRUCT **)NULL, (SYS_ENVIRON_STRUCT *)NULL);
+    }
+   return (SYS_FAILURE);
+
+LBL_EXIT_SUCCESS:
+    SYS_IF_DEBUG
+    {
+      CM_WrLog(SYS_TRACE_FILE,"Exiting succesfully out of  B_PrntHdrDet().\n",(ERROR_STRUCT **)NULL, (SYS_ENVIRON_STRUCT *)NULL);
+    }
+   return (SYS_SUCCESS);
+}
+
+
+/*************************************************************************
+ *                                                                       *
+ * Function Name         : B_PrntAEHndOffCrc                             *
+ *                                                                       *
+ * Description           : Adds CRC to Transaction records in Accounting *
+ *                         Entries Hand-off file.                        *
+ *                                                                       *
+ * Parameter            Type              Mode    Description            *
+ * ------------         --------          ------  ---------------        *
+ * p_AEHndOff           char *            I        FILE NAME OF THE      *
+ *                                                 HandOff file          * 
+ *                                                                       * 
+ * p_tmpAEHndOff        char *            I        FILE NAME OF THE      *
+ *                                                 HandOff file          * 
+ *                                                                       * 
+ * fl_Userlog           FILE *            I    		Pointer to 				 *
+ *                                                 log file              * 
+ *                                                                       * 
+ * p_error_list         ERROR _STRUCT **  I/O      PILE ON PARAMETER     * 
+ *                                                                       * 
+ * Return Values        :                                                *
+ *  SYS_SUCCESS  - success                                               *
+ *  SYS_FAILURE  - failure                                               *
+ *                                                                       *
+ *************************************************************************/
+
+ int B_PrntAEHndOffCrc( char              *p_AEHndOff,
+								char					*p_tmpAEHndOff,
+								FILE					*fl_Userlog,
+								ERROR_STRUCT      **p_error_list)
+ {
+	struct sqlca sqlca; /** 68 UAT Error **/
+
+   int l_char_cnt=0, l_useed_cnt=0;
+   int l_loop_cnt=0, l_crc_cnt=5;
+   char l_str[ACCTENT_MAX_REC_LEN]			=	SYS_NULL_STRING;
+   char l_str_tmp[ACCTENT_MAX_REC_LEN]		=	SYS_NULL_STRING;
+   char IbbsTmpPath[PATH_LENGTH]				= SYS_NULL_STRING;
+   int l_crc;
+   char l_str_lst_chr;
+   FILE *fpr, *fpo;
+
+	short	  l_condExists = 0;
+	short	  l_fmt31_exist = 0;
+	printf("\n Inside function name is |%s| temp fileanme is |%s| ",p_AEHndOff,p_AEHndOff);
+
+   /** Open Hand-Off file for reading (file from temporary path)**/
+   if ((fpr = fopen(p_AEHndOff,"r"))  == (FILE *) NULL)
+   {
+      CM_InsertError(p_error_list,E_FILE_NF,SYS_NULL_STRING,
+							SYS_NULL_STRING,SYS_NULL_STRING,
+							__LINE__,__FILE__);
+      SYS_RETURN_FAILURE
+   }
+
+   /**  Open file (in handoff directory) **/
+   if ((fpo = fopen(p_tmpAEHndOff,"w"))  == (FILE *) NULL)
+   {
+      CM_InsertError(p_error_list,E_FILE_NF,SYS_NULL_STRING,
+							SYS_NULL_STRING,SYS_NULL_STRING,
+							__LINE__,__FILE__);
+      SYS_RETURN_FAILURE
+   }
+
+   while( (fgets(l_str_tmp,ACCTENT_MAX_REC_LEN, fpr) ) != NULL)
+   {
+          l_char_cnt=0;
+          /* reads the string till char(10) is found */
+         while ( (l_str_tmp[l_char_cnt]) != 10) 
+			{
+				l_str[l_char_cnt] = l_str_tmp[l_char_cnt];
+				l_char_cnt++;
+			}
+			l_str[l_char_cnt] = '\0';
+
+         /* find the total number of lines in the input file
+         this is required as the first and the last line are not to be touched*/
+         /* transaction records begin with '2' */
+         if ((l_str[0] == '2'))
+         {
+
+				/** Changes for FLEXCUBE **/
+
+				l_condExists = 0;
+
+				if ( SYS_SUCCESS == CM_CntryCondChkFn("ACC_ENTRIES","CRC_FLEXCUBE",&l_condExists,p_error_list))
+				{
+					if (l_condExists == 0)
+					{
+            		BBX_CRC(l_str, l_char_cnt, l_useed_cnt++,&l_crc);
+						fprintf(fpo,"%s%s%X\n",l_str,AESEP,l_crc);
+					}
+					else
+					{
+            		BBX_CRC(l_str, l_char_cnt -1, l_useed_cnt++,&l_crc);
+						fprintf(fpo,"%s%04x%s%s\n",l_str,l_crc,AESEP,AESEP);   /* RETRO_1504 */
+					}	
+				}
+				else
+				{
+					SYS_RETURN_FAILURE
+				}
+         }
+			else
+			{
+				fprintf(fpo,"%s\n",l_str);
+			}
+   }
+   fclose(fpr);
+   fclose(fpo);
+
+SYS_RETURN_SUCCESS;
+
+/** EXIT BLOCK **/
+
+LBL_EXIT_FAILURE:
+	 unlink(p_AEHndOff);
+    SYS_IF_DEBUG
+    {
+        CM_WrLog(SYS_TRACE_FILE, "Exiting unsuccessfully out of\
+B_PrntAEHndOffCrc().\n", (ERROR_STRUCT **)NULL, (SYS_ENVIRON_STRUCT *)NULL);
+    }
+   return (SYS_FAILURE);
+
+LBL_EXIT_SUCCESS:
+	 unlink(p_AEHndOff);
+    SYS_IF_DEBUG
+    {
+      CM_WrLog(SYS_TRACE_FILE,"Exiting succesfully out of \
+B_PrntAEHndOffCrc().\n",(ERROR_STRUCT **)NULL, (SYS_ENVIRON_STRUCT *)NULL);
+    }
+   return (SYS_SUCCESS);
+}
+
+
+
+
+/*************************************************************************
+ *                                                                       *
+ * Function Name         : BBX_CRC                                       *
+ *                                                                       *
+ * Description           : Returns the CRC of the Text                   *
+ *                                                                       *
+ * Parameter            Type              Mode    Description            *
+ * ------------         --------          ------  ---------------        *
+ * pText                char              I        TEXT FOR WHICH CRC IS *
+ *                                                 REQUIRED              *
+ *                                                                       * 
+ * pLen                 int               I        LENGTH OF pText       * 
+ *                                                                       * 
+ * pSeed                int               I        Seed                  * 
+ *                                                                       * 
+ * p_RetVal             int *             I/O      Return Value          * 
+ *                                                                       * 
+ * Return Values        :                                                *
+ *  SYS_SUCCESS  - success                                               *
+ *  SYS_FAILURE  - failure                                               *
+ *                                                                       *
+ *************************************************************************/
+
+
+int BBX_CRC ( char *pText, int pLen, int pSeed ,int *pRetVal)
+{
+    union SEED
+   {
+      unsigned short uWholeWord;  /* 16 bits */
+      struct
+      {
+          unsigned char High;
+         unsigned char Low;
+      }
+      ucByte;
+   }
+   uCRC;
+   unsigned i, j;
+   unsigned uFlag;
+   uCRC.uWholeWord = pSeed;
+   for (i = 0; i < pLen; i++)
+    {
+       /* exclusive or byte from sText to low byte of seed */
+       uCRC.ucByte.Low ^= pText[i];
+
+       for (j = 0; j < 8; j++)                 /* do 8 times */
+       {
+         uFlag = uCRC.uWholeWord & 1;        /* shift seed one bit to right */
+         uCRC.uWholeWord = uCRC.uWholeWord >> 1;
+         if (uFlag)                          /* if a 1 bit was shifted out */
+         {
+            uCRC.uWholeWord ^= 0xA001;      /* exclusive or A001 to seed */
+         }
+       }
+     }
+   *pRetVal = uCRC.uWholeWord;
+
+   return (SYS_SUCCESS);
+}
